@@ -4,9 +4,13 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:intl/intl.dart';
 
+import '../../app/firebase_bootstrap.dart';
 import '../../data/firebase/firestore_service.dart';
 import '../../data/firebase/storage_service.dart';
+import '../../features/bookings/admin_booking.dart';
+import '../../features/staff/admin_stylist.dart';
 
 import '../../app/theme.dart';
 import '../../shared/widgets/responsive.dart';
@@ -19,6 +23,13 @@ class DashboardScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final padding = Responsive.horizontalPadding(context);
     final isWide = Responsive.isDesktop(context);
+    final firestore = AdminFirestoreService(FirebaseFirestore.instance);
+    final bookingsStream = FirebaseBootstrap.enableFirebase
+        ? firestore.watchBookings()
+        : Stream.value(_demoBookings);
+    final stylistsStream = FirebaseBootstrap.enableFirebase
+        ? firestore.watchStylists()
+        : Stream.value(_demoStylists);
 
     return Scaffold(
       appBar: AppBar(
@@ -30,45 +41,102 @@ class DashboardScreen extends StatelessWidget {
           const SizedBox(width: 16),
         ],
       ),
-      body: ListView(
-        padding: EdgeInsets.fromLTRB(padding, 12, padding, 32),
-        children: [
-          Text('Good afternoon, Divya', style: Theme.of(context).textTheme.displaySmall),
-          const SizedBox(height: 6),
-          Text("Here is today's single-salon performance snapshot.",
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: AdminColors.softInk)),
-          const SizedBox(height: 24),
-          Wrap(
-            spacing: 16,
-            runSpacing: 16,
-            children: const [
-              SizedBox(width: 260, child: StatCard(title: 'Todays Bookings', value: '38', delta: '+12% vs yesterday', icon: Icons.event_available)),
-              SizedBox(width: 260, child: StatCard(title: 'Revenue', value: '?72,450', delta: '+8.3% vs last week', icon: Icons.payments_rounded)),
-              SizedBox(width: 260, child: StatCard(title: 'Avg. Rating', value: '4.86', delta: '? +0.04 this month', icon: Icons.star_rounded)),
+      body: StreamBuilder<List<AdminBooking>>(
+        stream: bookingsStream,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snapshot.hasError) {
+            return const Center(child: Text('Failed to load dashboard data'));
+          }
+          final bookings = snapshot.data ?? [];
+          final totalBookings = bookings.length;
+          final revenue = bookings.fold<double>(0, (sum, item) => sum + item.price);
+          final avgRating = bookings.isEmpty ? 4.8 : 4.8;
+          final upcoming = bookings
+              .where((b) => b.dateTime.isAfter(DateTime.now()))
+              .toList()
+            ..sort((a, b) => a.dateTime.compareTo(b.dateTime));
+
+          final bookingCounts = <String, int>{};
+          for (final booking in bookings) {
+            final name = booking.stylistName.trim();
+            if (name.isEmpty) continue;
+            bookingCounts[name] = (bookingCounts[name] ?? 0) + 1;
+          }
+
+          return ListView(
+            padding: EdgeInsets.fromLTRB(padding, 12, padding, 32),
+            children: [
+              Text('Good afternoon, Divya', style: Theme.of(context).textTheme.displaySmall),
+              const SizedBox(height: 6),
+              Text("Here is today's single-salon performance snapshot.",
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: AdminColors.softInk)),
+              const SizedBox(height: 24),
+              Wrap(
+                spacing: 16,
+                runSpacing: 16,
+                children: [
+                  SizedBox(
+                    width: 260,
+                    child: StatCard(
+                      title: 'Todays Bookings',
+                      value: totalBookings.toString(),
+                      delta: '+12% vs yesterday',
+                      icon: Icons.event_available,
+                    ),
+                  ),
+                  SizedBox(
+                    width: 260,
+                    child: StatCard(
+                      title: 'Revenue',
+                      value: '?${revenue.toStringAsFixed(0)}',
+                      delta: '+8.3% vs last week',
+                      icon: Icons.payments_rounded,
+                    ),
+                  ),
+                  SizedBox(
+                    width: 260,
+                    child: StatCard(
+                      title: 'Avg. Rating',
+                      value: avgRating.toStringAsFixed(2),
+                      delta: '+0.04 this month',
+                      icon: Icons.star_rounded,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 24),
+              isWide
+                  ? Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Expanded(child: _RevenuePanel()),
+                        const SizedBox(width: 20),
+                        Expanded(child: _UpcomingPanel(bookings: upcoming.take(3).toList())),
+                      ],
+                    )
+                  : Column(
+                      children: [
+                        const _RevenuePanel(),
+                        const SizedBox(height: 20),
+                        _UpcomingPanel(bookings: upcoming.take(3).toList()),
+                      ],
+                    ),
+              const SizedBox(height: 24),
+              StreamBuilder<List<AdminStylist>>(
+                stream: stylistsStream,
+                builder: (context, staffSnapshot) {
+                  final stylists = staffSnapshot.data ?? const <AdminStylist>[];
+                  return _TeamLoadPanel(stylists: stylists, bookingCounts: bookingCounts);
+                },
+              ),
+              const SizedBox(height: 24),
+              const _ServiceImageUpload(),
             ],
-          ),
-          const SizedBox(height: 24),
-          isWide
-              ? Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(child: _RevenuePanel()),
-                    const SizedBox(width: 20),
-                    Expanded(child: _UpcomingPanel()),
-                  ],
-                )
-              : Column(
-                  children: const [
-                    _RevenuePanel(),
-                    SizedBox(height: 20),
-                    _UpcomingPanel(),
-                  ],
-                ),
-          const SizedBox(height: 24),
-          _TeamLoadPanel(),
-          const SizedBox(height: 24),
-          const _ServiceImageUpload(),
-        ],
+          );
+        },
       ),
     );
   }
@@ -111,7 +179,9 @@ class _RevenuePanel extends StatelessWidget {
 }
 
 class _UpcomingPanel extends StatelessWidget {
-  const _UpcomingPanel();
+  const _UpcomingPanel({required this.bookings});
+
+  final List<AdminBooking> bookings;
 
   @override
   Widget build(BuildContext context) {
@@ -123,11 +193,21 @@ class _UpcomingPanel extends StatelessWidget {
         children: [
           Text('Upcoming bookings', style: Theme.of(context).textTheme.titleLarge),
           const SizedBox(height: 12),
-          const _BookingRow(name: 'Ananya Rai', service: 'Luxe Color Blend', time: '1:30 PM'),
-          const Divider(),
-          const _BookingRow(name: 'Rohit Shah', service: 'Signature Haircut', time: '2:15 PM'),
-          const Divider(),
-          const _BookingRow(name: 'Kiara Mehta', service: 'Scalp Renewal Spa', time: '3:00 PM'),
+          if (bookings.isEmpty)
+            const Text('No upcoming bookings')
+          else
+            Column(
+              children: [
+                for (int i = 0; i < bookings.length; i++) ...[
+                  _BookingRow(
+                    name: bookings[i].customerName,
+                    service: bookings[i].serviceName,
+                    time: DateFormat('hh:mm a').format(bookings[i].dateTime),
+                  ),
+                  if (i != bookings.length - 1) const Divider(),
+                ],
+              ],
+            ),
           const SizedBox(height: 8),
           Align(
             alignment: Alignment.centerLeft,
@@ -140,8 +220,15 @@ class _UpcomingPanel extends StatelessWidget {
 }
 
 class _TeamLoadPanel extends StatelessWidget {
+  const _TeamLoadPanel({required this.stylists, required this.bookingCounts});
+
+  final List<AdminStylist> stylists;
+  final Map<String, int> bookingCounts;
+
   @override
   Widget build(BuildContext context) {
+    final maxCount = bookingCounts.values.isEmpty ? 1 : bookingCounts.values.reduce((a, b) => a > b ? a : b);
+
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
@@ -150,16 +237,18 @@ class _TeamLoadPanel extends StatelessWidget {
         children: [
           Text('Team load & availability', style: Theme.of(context).textTheme.titleLarge),
           const SizedBox(height: 12),
-          Wrap(
-            spacing: 16,
-            runSpacing: 12,
-            children: const [
-              _StaffChip(name: 'Yoyo', load: '90%'),
-              _StaffChip(name: 'Maya', load: '75%'),
-              _StaffChip(name: 'Rhea', load: '62%'),
-              _StaffChip(name: 'Ariana', load: '80%'),
-            ],
-          ),
+          if (stylists.isEmpty)
+            const Text('No staff found')
+          else
+            Wrap(
+              spacing: 16,
+              runSpacing: 12,
+              children: stylists.map((stylist) {
+                final count = bookingCounts[stylist.name] ?? 0;
+                final load = ((count / maxCount) * 100).clamp(10, 100).toStringAsFixed(0);
+                return _StaffChip(name: stylist.name, load: '$load%');
+              }).toList(),
+            ),
         ],
       ),
     );
@@ -323,3 +412,43 @@ class _StaffChip extends StatelessWidget {
     );
   }
 }
+
+final _demoBookings = <AdminBooking>[
+  AdminBooking(
+    id: '1',
+    customerName: 'Ananya Rai',
+    serviceName: 'Luxe Color Blend',
+    stylistName: 'Ariana',
+    dateTime: DateTime(2026, 2, 17, 13, 30),
+    timeSlot: '1:30 PM',
+    status: 'Confirmed',
+    price: 2450,
+  ),
+  AdminBooking(
+    id: '2',
+    customerName: 'Rohit Shah',
+    serviceName: 'Signature Haircut',
+    stylistName: 'Yoyo',
+    dateTime: DateTime(2026, 2, 17, 14, 15),
+    timeSlot: '2:15 PM',
+    status: 'Pending',
+    price: 1200,
+  ),
+  AdminBooking(
+    id: '3',
+    customerName: 'Kiara Mehta',
+    serviceName: 'Scalp Renewal Spa',
+    stylistName: 'Maya',
+    dateTime: DateTime(2026, 2, 17, 15, 0),
+    timeSlot: '3:00 PM',
+    status: 'Confirmed',
+    price: 1800,
+  ),
+];
+
+final _demoStylists = <AdminStylist>[
+  AdminStylist(name: 'Yoyo', level: 'Senior'),
+  AdminStylist(name: 'Maya', level: 'Stylist'),
+  AdminStylist(name: 'Rhea', level: 'Stylist'),
+  AdminStylist(name: 'Ariana', level: 'Senior'),
+];
